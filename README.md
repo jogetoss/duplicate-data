@@ -1,6 +1,6 @@
 # Description
 
-This repository is meant to serve as a general template for how to set up new repositories in the JogetOSS organization. 
+Duplicate Data Plugin is a new form element plugin to automatically clone an existing record in Joget v6 and higher version. For more information can refer on [Marketplace](https://marketplace.joget.org/jw/web/userview/mp/mpp/_/vad?id=duplicate_data-1). 
 
 # Getting Help
 
