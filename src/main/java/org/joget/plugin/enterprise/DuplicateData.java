@@ -40,7 +40,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     @Override
     public String getVersion() {
-        return "6.0.1";
+        return "6.0.2";
     }
 
     @Override
