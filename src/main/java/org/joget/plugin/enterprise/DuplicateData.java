@@ -40,7 +40,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     @Override
     public String getVersion() {
-        return "6.0.2";
+        return "6.0.3";
     }
 
     @Override
@@ -151,7 +151,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         for (String key : (Set<String>) row.getCustomProperties().keySet()) {
             if (!key.equals(FormUtil.PROPERTY_ID)) {
                 obj.put(key, row.get(key));
-                tempRP.put(key, row.get(key).toString().split(";"));
+                tempRP.put(key, new String[] { row.get(key).toString() });
             }
         }
         
