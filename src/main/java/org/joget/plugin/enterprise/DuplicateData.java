@@ -8,6 +8,7 @@ import java.util.Set;
 import org.apache.commons.io.FileUtils;
 import org.joget.apps.app.service.AppService;
 import org.joget.apps.app.service.AppUtil;
+import org.joget.apps.form.dao.FormDataDao;
 import org.joget.apps.form.model.Element;
 import org.joget.apps.form.model.Form;
 import org.joget.apps.form.model.FormBinder;
@@ -32,7 +33,7 @@ import org.json.JSONObject;
 public class DuplicateData extends Element implements FormBuilderPaletteElement, FormLoadBinder, FormContainer {
     protected boolean isRetrieveData = false;
     protected String uuid = null;
-    
+
     @Override
     public String getName() {
         return "DuplicateData";
@@ -40,7 +41,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     @Override
     public String getVersion() {
-        return "6.0.3";
+        return "6.0.4";
     }
 
     @Override
@@ -53,7 +54,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         String html = FormUtil.generateElementHtml(this, formData, "duplicateData.ftl", dataModel);
         return html;
     }
-    
+
     @Override
     public FormRowSet formatData(FormData formData) {
         return null;
@@ -93,7 +94,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
     public String getFormBuilderIcon() {
         return "/plugin/org.joget.apps.form.lib.TextField/images/textField_icon.gif";
     }
-    
+
     @Override
     public FormLoadBinder getLoadBinder() {
         if (isRetrieveData) {
@@ -110,42 +111,96 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                 uuid = UuidGenerator.getInstance().getUuid();
             }
             isRetrieveData = true;
+            boolean enableMultipageDataCopy = "true".equals(getPropertyString("CopyMultipageData"));
+
             try {
-                FormData newFormData = new FormData();
-                newFormData.setPrimaryKeyValue(id);
-                Form rootForm = FormUtil.findRootForm(element);
-                FormUtil.executeLoadBinders(rootForm, newFormData);
+                if (enableMultipageDataCopy) {
+                    AppService appService = (AppService) AppUtil.getApplicationContext().getBean("appService");
+                    String formId = FormUtil.findRootForm(element).getPropertyString("id");
+                    String tableName = appService.getFormTableName(AppUtil.getCurrentAppDefinition(), formId);
+
+                    String newId = duplicateRow(formId, tableName, id);
+                    if (newId == null) {
+                        LogUtil.warn(getClassName(), "Failed to duplicate record for ID: " + id);
+                        return null;
+                    }
+
+                    // Set new primary key to formData
+                    formData.setPrimaryKeyValue(newId);
+                    formData.addRequestParameterValues("_duplicateData_done", new String[]{"true"});
+
+                    FormData newFormData = new FormData();
+                    newFormData.setPrimaryKeyValue(newId);
+                    Form rootForm = FormUtil.findRootForm(element);
+                    FormUtil.executeLoadBinders(rootForm, newFormData);
+                    setFormData(rootForm, formData, newFormData);
+                } else {
+                    FormData newFormData = new FormData();
+                    newFormData.setPrimaryKeyValue(id);
+                    Form rootForm = FormUtil.findRootForm(element);
+                    FormUtil.executeLoadBinders(rootForm, newFormData);
                 
-                setFormData(rootForm, formData, newFormData);
-                
+                    setFormData(rootForm, formData, newFormData);
+
+                }
             } catch (Exception e) {
-                LogUtil.error(getClassName(), e, "");
+                if (enableMultipageDataCopy) {
+                    LogUtil.error(getClassName(), e, "Error duplicating data from source ID: " + id);
+                } else {
+                    LogUtil.error(getClassName(), e, "Error loading data from source ID: " + id);
+                }
             } finally {
                 isRetrieveData = false;
             }
         }
         return null;
     }
-    
+
+    protected String duplicateRow(String formId, String tableName, String sourceId) {
+        FormDataDao dao = (FormDataDao) AppUtil.getApplicationContext().getBean("formDataDao");
+        FormRow source = dao.load(formId, tableName, sourceId);
+        if (source == null) {
+            return null;
+        }
+
+        String newId = UuidGenerator.getInstance().getUuid();
+        FormRow clone = new FormRow();
+        clone.putAll(source);
+        clone.setId(newId);
+        clone.remove("dateCreated");
+        clone.remove("dateModified");
+        clone.remove("createdBy");
+        clone.remove("modifiedBy");
+
+        FormRowSet rs = new FormRowSet();
+        rs.setMultiRow(false);
+        rs.add(clone);
+        dao.saveOrUpdate(formId, tableName, rs);
+
+        LogUtil.info(getClassName(), "[Duplicate] Saved newId=" + newId);
+
+        return newId;
+    }
+
     protected void setFormData(Element element, FormData formData, FormData newFormData) throws IOException {
-        
+
         if (element.getLoadBinder() != null) {
             processRows(element, formData, newFormData);
         }
-        
+
         for (Element child : element.getChildren()) {
             setFormData(child, formData, newFormData);
         }
     }
-    
+
     protected JSONObject convertFormDataToRequestParam(Element element, Form innerForm, FormRow row, FormData formData, FormData innerFormData, int index) throws JSONException, IOException {
         String paramName = FormUtil.getElementParameterName(element) + "_jsonrow_" + index;
-        
+
         //Skip parent
         for (Element e : innerForm.getChildren()) {
             FormUtil.executeLoadBinders(e, innerFormData);
         }
-        
+
         JSONObject obj = new JSONObject();
         JSONObject tempRP = new JSONObject();
         for (String key : (Set<String>) row.getCustomProperties().keySet()) {
@@ -154,23 +209,23 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                 tempRP.put(key, new String[] { row.get(key).toString() });
             }
         }
-        
+
         if (innerFormData.getLoadBinderMap().size() > 0) {
             //Skip parent
             for (Element e : innerForm.getChildren()) {
                 recursiveSetRequestParam(e, innerFormData, false);
             }
-            
+
             if (innerFormData.getRequestParams().size() > 0) {
                 for (String key : innerFormData.getRequestParams().keySet()) {
                     tempRP.put(key, innerFormData.getRequestParameterValues(key));
                 }
             }
         }
-        
+
         tempRP.put(FormUtil.getElementParameterName(innerForm) + "_SUBMITTED", new String[]{"true"});
         obj.put("_tempRequestParamsMap", tempRP);
-        
+
         if (row.getTempFilePathMap() != null && row.getTempFilePathMap().size() > 0) {
             JSONObject temp = new JSONObject();
             for (String key : row.getTempFilePathMap().keySet()) {
@@ -178,12 +233,12 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
             }
             obj.put("_tempFilePathMap", temp);
         }
-        
+
         formData.addRequestParameterValues(paramName, new String[]{obj.toString()});
-        
+
         return obj;
     }
-    
+
     protected void recursiveSetRequestParam(Element element, FormData formData, boolean set) throws JSONException, IOException {
         if (element.getLoadBinder() != null) {
             set = true;
@@ -192,12 +247,12 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
             String[] values = FormUtil.getElementPropertyValues(element, formData);
             formData.addRequestParameterValues(FormUtil.getElementParameterName(element), values);
         }
-        
+
         for (Element e : element.getChildren()) {
             recursiveSetRequestParam(e, formData, set);
         }
     }
-    
+
     protected void processRows(Element element, FormData formData, FormData newformData) throws IOException {
         FormRowSet rows = newformData.getLoadBinderData(element);
         JSONArray jsonArray = new JSONArray();
@@ -227,22 +282,22 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                 }
                 rc++;
             }
-            
+
             if (element.getName().equalsIgnoreCase("SpreadSheet")) {
                 String spreadsheetParam = FormUtil.getElementParameterName(element) + "_JSON_DATA";
                 formData.addRequestParameterValues(spreadsheetParam, new String[]{jsonArray.toString()});
             }
-            
+
             if (!(element instanceof GridInnerDataRetriever)) {
                 formData.setLoadBinderData(element.getLoadBinder(), rows);
             } else {
                 formData.getLoadBinderMap().remove(element.getLoadBinder());
                 Form form = findRootForm(element);
                 formData.addRequestParameterValues(FormUtil.getElementParameterName(form) + "_SUBMITTED", new String[]{"true"});
-            } 
+            }
         }
     }
-    
+
     protected void handleFiles(Element element, String pk, FormRow row) throws IOException {
         String path = FileUtil.getUploadPath(element, pk);
         if (!((FormBinder) element.getLoadBinder()).getPropertyString("formDefId").isEmpty()) {
@@ -280,8 +335,8 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                             values[i] = uuid + "_" + pk + File.separator + filename;
                         }
                         temPaths.add(uuid + "_" + pk + File.separator + filename);
-                        if (files.contains(filename+".thumb.jpg")) {
-                            temPaths.add(uuid + "_" + pk + File.separator + filename+".thumb.jpg");
+                        if (files.contains(filename + ".thumb.jpg")) {
+                            temPaths.add(uuid + "_" + pk + File.separator + filename + ".thumb.jpg");
                         }
                         isFile = true;
                     }

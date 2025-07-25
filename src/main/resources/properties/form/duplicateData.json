@@ -1,14 +1,26 @@
 [{
-    title : 'Configure Duplicate Data',
-    properties : [{
-        name : 'id',
-        label : 'FieldId',
-        type : 'hidden'
+        title : 'Configure Duplicate Data',
+        properties : [{
+                name : 'id',
+                label : 'FieldId',
+                type : 'hidden'
     },{
-        name : 'paramname',
-        label : 'URL Parameter',
-        type : 'textfield',
-        value : 'duplicateId',
-        required : 'True'
-    }]
-}]
+                    name : 'paramname',
+                    label : 'URL Parameter',
+                    type : 'textfield',
+                    value : 'duplicateId',
+                    required : 'True'
+                    },
+                    {
+                        name: 'CopyMultipageData',
+                        label: 'Duplicate Data for Multipage form',
+                        type: 'checkbox',
+                        options: [
+                            {
+                                value: 'true', 
+                                label: ''
+                            }
+                            ]
+                            }
+                        ]
+                        }]

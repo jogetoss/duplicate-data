@@ -4,7 +4,7 @@
     <groupId>org.joget.plugin.enterprise</groupId>
     <artifactId>duplicate_data</artifactId>
     <packaging>bundle</packaging>
-    <version>6.0.3</version>
+    <version>6.0.4</version>
     <name>duplicate_data</name>
     <url>http://www.joget.org</url>
     <build>
