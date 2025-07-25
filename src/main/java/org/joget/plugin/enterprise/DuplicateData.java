@@ -177,7 +177,6 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         rs.add(clone);
         dao.saveOrUpdate(formId, tableName, rs);
 
-        LogUtil.info(getClassName(), "[Duplicate] Saved newId=" + newId);
 
         return newId;
     }
