@@ -22,7 +22,6 @@ import org.joget.apps.form.model.FormRowSet;
 import org.joget.apps.form.model.GridInnerDataRetriever;
 import org.joget.apps.form.service.FileUtil;
 import org.joget.apps.form.service.FormUtil;
-import static org.joget.apps.form.service.FormUtil.findRootForm;
 import org.joget.commons.util.FileManager;
 import org.joget.commons.util.LogUtil;
 import org.joget.commons.util.UuidGenerator;
@@ -31,6 +30,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public class DuplicateData extends Element implements FormBuilderPaletteElement, FormLoadBinder, FormContainer {
+
     protected boolean isRetrieveData = false;
     protected String uuid = null;
 
@@ -41,7 +41,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     @Override
     public String getVersion() {
-        return "6.0.4";
+        return "6.0.5";
     }
 
     @Override
@@ -139,7 +139,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                     newFormData.setPrimaryKeyValue(id);
                     Form rootForm = FormUtil.findRootForm(element);
                     FormUtil.executeLoadBinders(rootForm, newFormData);
-                
+
                     setFormData(rootForm, formData, newFormData);
 
                 }
@@ -205,7 +205,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         for (String key : (Set<String>) row.getCustomProperties().keySet()) {
             if (!key.equals(FormUtil.PROPERTY_ID)) {
                 obj.put(key, row.get(key));
-                tempRP.put(key, new String[] { row.get(key).toString() });
+                tempRP.put(key, new String[]{row.get(key).toString()});
             }
         }
 
@@ -254,46 +254,74 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     protected void processRows(Element element, FormData formData, FormData newformData) throws IOException {
         FormRowSet rows = newformData.getLoadBinderData(element);
-        JSONArray jsonArray = new JSONArray();
-        JSONObject obj = null;
-        if (rows != null) {
-            int rc = 0;
-            for (FormRow row : rows) {
+        if (rows == null) {
+            return;
+        }
+
+        JSONArray spreadsheetJsonArray = new JSONArray();
+
+        for (FormRow row : rows) {
                 //copy uploaded files to temp folder
-                String pk = row.getId();
-                if (pk != null) {
-                    handleFiles(element, pk, row);
+            String pk = row.getId();
+            if (pk != null && !pk.isEmpty()) {
 
-                    if (element instanceof GridInnerDataRetriever) {
-                        Form innerForm = ((GridInnerDataRetriever) element).getInnerForm();
-                        try {
-                            FormData innerFormData = new FormData();
-                            innerFormData.setPrimaryKeyValue(row.getId());
+                handleFiles(element, pk, row);
 
-                            obj = convertFormDataToRequestParam(element, innerForm, row, formData, innerFormData, rc);
-                            jsonArray.put(obj);
-                        } catch (Exception ge) {
-                            LogUtil.error(getClassName(), ge, "");
-                        }
-                    }
-
-                    row.setId(null);
+                
+                if (element instanceof GridInnerDataRetriever) {
+                    executeGridInnerLoadBinders(element, row);
                 }
-                rc++;
+                row.setId(null);
             }
 
             if (element.getName().equalsIgnoreCase("SpreadSheet")) {
-                String spreadsheetParam = FormUtil.getElementParameterName(element) + "_JSON_DATA";
-                formData.addRequestParameterValues(spreadsheetParam, new String[]{jsonArray.toString()});
+                JSONObject obj = new JSONObject();
+                try {
+                    for (String key : (Set<String>) row.getCustomProperties().keySet()) {
+                        if (!key.equals(FormUtil.PROPERTY_ID)) {
+                            Object v = row.get(key);
+                            obj.put(key, (v != null) ? v : JSONObject.NULL);
+                        }
+                    }
+                } catch (JSONException e) {
+                    LogUtil.error(getClassName(), e, "Error building spreadsheet JSON");
+                }
+                spreadsheetJsonArray.put(obj);
+            }
+        }
+
+        if (element.getName().equalsIgnoreCase("SpreadSheet")) {
+            String spreadsheetParam = FormUtil.getElementParameterName(element) + "_JSON_DATA";
+            formData.addRequestParameterValues(spreadsheetParam, new String[]{spreadsheetJsonArray.toString()});
+        }
+
+        if (element.getLoadBinder() != null) {
+            formData.setLoadBinderData(element.getLoadBinder(), rows);
+        }
+    }
+
+    protected void executeGridInnerLoadBinders(Element gridElement, FormRow row) {
+        if (!(gridElement instanceof GridInnerDataRetriever)) {
+            return;
+        }
+        try {
+            Form innerForm = ((GridInnerDataRetriever) gridElement).getInnerForm();
+            if (innerForm == null) {
+                return;
+            }
+            String pk = row.getId();
+            if (pk == null || pk.isEmpty()) {
+                return;
             }
 
-            if (!(element instanceof GridInnerDataRetriever)) {
-                formData.setLoadBinderData(element.getLoadBinder(), rows);
-            } else {
-                formData.getLoadBinderMap().remove(element.getLoadBinder());
-                Form form = findRootForm(element);
-                formData.addRequestParameterValues(FormUtil.getElementParameterName(form) + "_SUBMITTED", new String[]{"true"});
+            FormData innerFormData = new FormData();
+            innerFormData.setPrimaryKeyValue(pk);
+            for (Element e : innerForm.getChildren()) {
+                FormUtil.executeLoadBinders(e, innerFormData);
             }
+
+        } catch (Exception ex) {
+            LogUtil.error(getClassName(), ex, "Error hydrating grid inner form binders");
         }
     }
 
