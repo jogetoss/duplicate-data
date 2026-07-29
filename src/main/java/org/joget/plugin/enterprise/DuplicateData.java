@@ -2,10 +2,16 @@ package org.joget.plugin.enterprise;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import org.apache.commons.io.FileUtils;
+import org.joget.apps.app.dao.FormDefinitionDao;
+import org.joget.apps.app.model.AppDefinition;
+import org.joget.apps.app.model.FormDefinition;
 import org.joget.apps.app.service.AppService;
 import org.joget.apps.app.service.AppUtil;
 import org.joget.apps.form.dao.FormDataDao;
@@ -41,7 +47,7 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
     @Override
     public String getVersion() {
-        return "6.0.7";
+        return "6.0.8";
     }
 
     @Override
@@ -119,7 +125,12 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
                     String formId = FormUtil.findRootForm(element).getPropertyString("id");
                     String tableName = appService.getFormTableName(AppUtil.getCurrentAppDefinition(), formId);
 
-                    String newId = duplicateRow(formId, tableName, id);
+                    JSONObject mpfProps = getMultiPagedProps(formId);
+                    Map<String, String> formTableMap
+                            = (mpfProps == null) ? Collections.emptyMap()
+                                    : extractFormDefIdTableMap(mpfProps);
+
+                    String newId = duplicateRow(formId, tableName, id, formTableMap);
                     if (newId == null) {
                         LogUtil.warn(getClassName(), "Failed to duplicate record for ID: " + id);
                         return null;
@@ -156,12 +167,84 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         return null;
     }
 
-    protected String duplicateRow(String formId, String tableName, String sourceId) {
+    
+    private Map<String, String> extractFormDefIdTableMap(JSONObject mpfProps) {
+        JSONObject numberOfPage = mpfProps.optJSONObject("numberOfPage");
+        if (numberOfPage == null) {
+            LogUtil.warn("MultiPagedExtractor", "No numberOfPage property in MultiPagedForm");
+            return Collections.emptyMap();
+        }
+
+        int pageCount = 0;
+        try {
+            pageCount = Integer.parseInt(numberOfPage.optString("className", "0"));
+        } catch (NumberFormatException ignore) {
+        }
+
+        JSONObject pageProps = numberOfPage.optJSONObject("properties");
+        if (pageProps == null) {
+            return Collections.emptyMap();
+        }
+
+        Map<String, String> formTableMap = new LinkedHashMap<>(); 
+
+        for (int i = 1; i <= pageCount; i++) {
+            String key1 = "page" + i + "_formDefId";
+            String key2 = "page" + i + "_formdefid";
+            String formDefId = pageProps.has(key1) ? pageProps.optString(key1, null) : pageProps.optString(key2, null);
+            if (formDefId == null) {
+                continue;
+            }
+
+            AppService appService = (AppService) AppUtil.getApplicationContext().getBean("appService");
+            String tableName = appService.getFormTableName(AppUtil.getCurrentAppDefinition(), formDefId);
+
+            formTableMap.put(formDefId, tableName);
+        }
+
+        return formTableMap;
+    }
+
+ 
+    public Map<String, String> detectForeignKeys(FormRow source, Map<String, String> formDefIdTableMap) {
+        FormDataDao dao = (FormDataDao) AppUtil.getApplicationContext().getBean("formDataDao");
+        Map<String, String> matches = new HashMap<>();
+
+        for (Map.Entry<Object, Object> e : (Set<Map.Entry<Object, Object>>) source.entrySet()) {
+            String columnName = String.valueOf(e.getKey());
+            String value = String.valueOf(e.getValue());
+
+            for (Map.Entry<String, String> tableEntry : formDefIdTableMap.entrySet()) {
+                String formDefId = tableEntry.getKey();
+                String tableName = tableEntry.getValue();
+
+                FormRow row = dao.load(formDefId, tableName, value);
+                if (row != null) {
+                    matches.put(columnName, tableName);
+                    break;                
+                }
+            }
+        }
+        return matches;
+    }
+
+    protected String duplicateRow(String formId,
+            String tableName,
+            String sourceId,
+            Map<String, String> formTableMap) {
         FormDataDao dao = (FormDataDao) AppUtil.getApplicationContext().getBean("formDataDao");
         FormRow source = dao.load(formId, tableName, sourceId);
         if (source == null) {
             return null;
         }
+
+        if (formTableMap == null || formTableMap.isEmpty()) {
+            LogUtil.warn(getClassName(), "No form-to-table mapping - aborting duplicateRow");
+            return null;
+        }
+        Map<String, String> tableMap = formTableMap;
+
+        Map<String, String> fkMatches = detectForeignKeys(source, tableMap);
 
         String newId = UuidGenerator.getInstance().getUuid();
         FormRow clone = new FormRow();
@@ -172,6 +255,43 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
         clone.remove("createdBy");
         clone.remove("modifiedBy");
 
+        for (Map.Entry<String, String> entry : fkMatches.entrySet()) {
+            String column = entry.getKey();        
+            String tableNameMatched = entry.getValue(); 
+            String fkValue = String.valueOf(source.get(column)); 
+
+            String matchedFormDefId = null;
+            for (Map.Entry<String, String> t : tableMap.entrySet()) {
+                if (t.getValue().equals(tableNameMatched)) {
+                    matchedFormDefId = t.getKey();
+                    break;
+                }
+            }
+
+            if (matchedFormDefId != null) {
+                FormRow referenced = dao.load(matchedFormDefId, tableNameMatched, fkValue);
+                if (referenced != null) {
+                    String newFkId = UuidGenerator.getInstance().getUuid();
+                    FormRow refClone = new FormRow();
+                    refClone.putAll(referenced);
+                    refClone.setId(newFkId);
+                    refClone.remove("dateCreated");
+                    refClone.remove("dateModified");
+                    refClone.remove("createdBy");
+                    refClone.remove("modifiedBy");
+
+                    FormRowSet refSet = new FormRowSet();
+                    refSet.setMultiRow(false);
+                    refSet.add(refClone);
+                    dao.saveOrUpdate(matchedFormDefId, tableNameMatched, refSet);
+                    copyUploadedFiles(tableNameMatched, fkValue, newFkId);
+                    clone.setProperty(column, newFkId);
+
+                    
+                }
+            }
+        }
+
         FormRowSet rs = new FormRowSet();
         rs.setMultiRow(false);
         rs.add(clone);
@@ -179,6 +299,98 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
 
 
         return newId;
+    }
+
+    protected void copyUploadedFiles(String tableName, String oldPk, String newPk) {
+        try {
+            String oldPath = FileUtil.getUploadPath(tableName, oldPk);
+            File oldDir = new File(oldPath);
+            if (oldDir.exists()) {
+                String newPath = FileUtil.getUploadPath(tableName, newPk);
+                File newDir = new File(newPath);
+                if (!newDir.exists()) {
+                    newDir.mkdirs();
+                }
+                FileUtils.copyDirectory(oldDir, newDir);
+               
+            }
+        } catch (IOException e) {
+            LogUtil.error(getClassName(), e, "Error copying uploaded files from "
+                    + oldPk + " to " + newPk + " in table " + tableName);
+        }
+    }
+
+    private JSONObject findMultiPagedProps(JSONObject element, String targetId) {
+        if (element == null) {
+            return null;
+        }
+
+        if ("org.joget.plugin.enterprise.MultiPagedForm"
+                .equals(element.optString("className"))) {
+            JSONObject props = element.optJSONObject("properties");
+            if (props != null && targetId.equals(props.optString("id"))) {
+                return props;          
+            }
+        }
+
+        JSONArray children = element.optJSONArray("elements");
+        if (children != null) {
+            for (int i = 0; i < children.length(); i++) {
+                JSONObject hit = findMultiPagedProps(children.optJSONObject(i), targetId);
+                if (hit != null) {
+                    return hit;
+                }
+            }
+        }
+        return null;
+    }
+
+
+    private JSONObject getMultiPagedProps(String formDefinitionId) throws JSONException {
+        AppDefinition appDef = AppUtil.getCurrentAppDefinition();
+        FormDefinitionDao dao = (FormDefinitionDao) AppUtil.getApplicationContext()
+                .getBean("formDefinitionDao");
+        FormDefinition formDef = dao.loadById(formDefinitionId, appDef);
+        if (formDef == null || formDef.getJson() == null) {
+            return null;
+        }
+
+        JSONObject root = new JSONObject(formDef.getJson());
+
+        JSONObject mpf = findMultiPagedElement(root);
+        if (mpf == null) {
+            return null;
+        }
+
+        String dynamicId = mpf.optJSONObject("properties")
+                .optString("id", null);
+        if (dynamicId == null) {
+            return null;
+        }
+
+        return findMultiPagedProps(root, dynamicId);
+    }
+
+    private JSONObject findMultiPagedElement(JSONObject element) {
+        if (element == null) {
+            return null;
+        }
+
+        if ("org.joget.plugin.enterprise.MultiPagedForm"
+                .equals(element.optString("className"))) {
+            return element;                 
+        }
+
+        JSONArray arr = element.optJSONArray("elements");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject hit = findMultiPagedElement(arr.optJSONObject(i));
+                if (hit != null) {
+                    return hit;
+                }
+            }
+        }
+        return null;
     }
 
     protected void setFormData(Element element, FormData formData, FormData newFormData) throws IOException {
@@ -191,8 +403,8 @@ public class DuplicateData extends Element implements FormBuilderPaletteElement,
             setFormData(child, formData, newFormData);
         }
     }
- 
-protected JSONObject convertFormDataToRequestParam(Element element, Form innerForm, FormRow row, FormData formData, FormData innerFormData, int index) throws JSONException, IOException {
+
+    protected JSONObject convertFormDataToRequestParam(Element element, Form innerForm, FormRow row, FormData formData, FormData innerFormData, int index) throws JSONException, IOException {
         for (Element e : innerForm.getChildren()) {
             FormUtil.executeLoadBinders(e, innerFormData);
         }
@@ -222,8 +434,8 @@ protected JSONObject convertFormDataToRequestParam(Element element, Form innerFo
         }
 
         tempRP.put(
-            FormUtil.getElementParameterName(innerForm) + "_SUBMITTED",
-            new String[]{"true"}
+                FormUtil.getElementParameterName(innerForm) + "_SUBMITTED",
+                new String[]{"true"}
         );
 
         obj.put("_tempRequestParamsMap", tempRP);
@@ -248,24 +460,24 @@ protected JSONObject convertFormDataToRequestParam(Element element, Form innerFo
     }
 
     protected void processRows(Element element, FormData formData, FormData newformData) throws IOException {
-        
+
         FormRowSet rows = newformData.getLoadBinderData(element);
         if (rows == null) {
             return;
         }
 
         JSONArray spreadsheetJsonArray = new JSONArray();
-        int rc = 0; 
+        int rc = 0;
 
         for (FormRow row : rows) {
-                //copy uploaded files to temp folder
+            //copy uploaded files to temp folder
             String pk = row.getId();
             if (pk != null && !pk.isEmpty()) {
 
                 handleFiles(element, pk, row);
 
                 
-               if (element instanceof GridInnerDataRetriever) {
+                if (element instanceof GridInnerDataRetriever) {
                     try {
                         Form innerForm = ((GridInnerDataRetriever) element).getInnerForm();
                         if (innerForm != null) {
